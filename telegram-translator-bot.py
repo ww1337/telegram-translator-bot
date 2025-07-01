@@ -44,7 +44,7 @@ def handle_text(update: Update, context: CallbackContext) -> None:
 
 def handle_photo(update: Update, context: CallbackContext) -> None:
     """
-    Обрабатывает фотографии с применением продвинутой предобработки для лучшего распознавания.
+    Финальная версия обработчика с максимально агрессивной предобработкой.
     """
     user_id = update.effective_user.id
     temp_photo_path = f"temp_photo_{user_id}.jpg"
@@ -53,31 +53,32 @@ def handle_photo(update: Update, context: CallbackContext) -> None:
         photo_file = update.message.photo[-1].get_file()
         photo_file.download(temp_photo_path)
         
-        update.message.reply_text("Картинка получена. Применяю магию и распознаю...")
+        update.message.reply_text("Картинка получена. Применяю финальную магию...")
 
-        # --- ШАГИ ПРОДВИНУТОЙ ПРЕДОБРАБОТКИ ---
-        # 1. Читаем изображение с помощью OpenCV
+        # --- МАКСИМАЛЬНО АГРЕССИВНАЯ ПРЕДОБРАБОТКА ---
+        # 1. Читаем изображение
         image = cv2.imread(temp_photo_path)
         
         # 2. Преобразуем в оттенки серого
-        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # 3. Применяем бинаризацию с методом Оцу.
-        #    Это самый важный шаг! Он превращает изображение в чисто черно-белое.
-        _, binary_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        # 3. Увеличиваем изображение в 2 раза
+        gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
         
-        # 4. (Опционально, но полезно) Можно инвертировать изображение, если текст светлый на темном фоне
-        # inverted_image = cv2.bitwise_not(binary_image)
-        # В большинстве случаев обычная бинаризация работает лучше.
+        # 4. Применяем бинаризацию (превращаем в чисто Ч/Б)
+        _, binary_image = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        
+        # 5. Инвертируем цвета (делаем текст черным на белом фоне)
+        processed_image = cv2.bitwise_not(binary_image)
 
-        # --- УЛУЧШЕННОЕ РАСПОЗНАВАНИЕ ---
-        # Передаем в Tesseract уже идеально обработанную картинку
-        custom_config = r'--oem 3 --psm 6'
-        recognized_text = pytesseract.image_to_string(binary_image, lang='rus+eng', config=custom_config)
+        # --- РАСПОЗНАВАНИЕ С ДРУГИМИ НАСТРОЙКАМИ ---
+        # PSM 11 хорошо подходит для поиска редкого текста на изображении
+        custom_config = r'--oem 3 --psm 11'
+        recognized_text = pytesseract.image_to_string(processed_image, lang='rus+eng', config=custom_config)
 
         if not recognized_text.strip():
             update.message.reply_text(
-                "Не удалось распознать текст на картинке. Попробуйте другое изображение."
+                "Не удалось распознать текст. Похоже, это предел моих возможностей для таких картинок."
             )
             return
 
@@ -98,7 +99,7 @@ def handle_photo(update: Update, context: CallbackContext) -> None:
     finally:
         if os.path.exists(temp_photo_path):
             os.remove(temp_photo_path)
-
+            
 def translate_text_logic(text: str) -> tuple[str, str, str]:
     if not text.strip():
         return "Нечего переводить.", "none", "none"
