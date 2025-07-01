@@ -43,6 +43,9 @@ def handle_text(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(translated_text)
 
 def handle_photo(update: Update, context: CallbackContext) -> None:
+    """
+    Обрабатывает фотографии с применением продвинутой предобработки для лучшего распознавания.
+    """
     user_id = update.effective_user.id
     temp_photo_path = f"temp_photo_{user_id}.jpg"
     
@@ -50,23 +53,27 @@ def handle_photo(update: Update, context: CallbackContext) -> None:
         photo_file = update.message.photo[-1].get_file()
         photo_file.download(temp_photo_path)
         
-        update.message.reply_text("Картинка получена. Улучшаю и распознаю...")
+        update.message.reply_text("Картинка получена. Применяю магию и распознаю...")
 
-        # --- ШАГИ ПРЕДОБРАБОТКИ ИЗОБРАЖЕНИЯ ---
+        # --- ШАГИ ПРОДВИНУТОЙ ПРЕДОБРАБОТКИ ---
         # 1. Читаем изображение с помощью OpenCV
         image = cv2.imread(temp_photo_path)
         
         # 2. Преобразуем в оттенки серого
         gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # 3. (Опционально) Можно применить бинаризацию для повышения контраста
-        #_, processed_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-        # Для начала хватит и оттенков серого
+        # 3. Применяем бинаризацию с методом Оцу.
+        #    Это самый важный шаг! Он превращает изображение в чисто черно-белое.
+        _, binary_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        
+        # 4. (Опционально, но полезно) Можно инвертировать изображение, если текст светлый на темном фоне
+        # inverted_image = cv2.bitwise_not(binary_image)
+        # В большинстве случаев обычная бинаризация работает лучше.
 
         # --- УЛУЧШЕННОЕ РАСПОЗНАВАНИЕ ---
-        # Указываем Tesseract, как именно анализировать картинку (psm 6 - хороший выбор для скриншотов)
+        # Передаем в Tesseract уже идеально обработанную картинку
         custom_config = r'--oem 3 --psm 6'
-        recognized_text = pytesseract.image_to_string(gray_image, lang='rus+eng', config=custom_config)
+        recognized_text = pytesseract.image_to_string(binary_image, lang='rus+eng', config=custom_config)
 
         if not recognized_text.strip():
             update.message.reply_text(
