@@ -1,130 +1,154 @@
-import os
 import logging
-from io import BytesIO
-
-import pytesseract
-from googletrans import Translator
+import os
 from PIL import Image
+import pytesseract
 
-from telegram import Update, BotCommand
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from googletrans import Translator
 
-# --- НАСТРОЙКА ---
-# Теперь нужен только токен от Telegram
-# Не забудьте установить его через: export TELEGRAM_TOKEN="ВАШ_ТЕЛЕГРАМ_ТОКЕН"
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# --- НАСТРОЙКИ ---
 
-# Настройка логирования для отладки
+# Включаем логирование, чтобы видеть ошибки в терминале
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- ЛОГИКА ПЕРЕВОДА И РАСПОЗНАВАНИЯ ---
+# Получаем токен бота из переменной окружения.
+# Это безопасный способ хранения токена.
+# Перед запуском нужно будет установить эту переменную в вашем терминале.
+# Для Linux/macOS: export TELEGRAM_TOKEN="ВАШ_ТОКЕН"
+# Для Windows: set TELEGRAM_TOKEN="ВАШ_ТОКЕН"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TELEGRAM_TOKEN:
+    # Если токен не найден, бот не запустится и выдаст ошибку
+    raise ValueError("Не найден токен! Установите переменную окружения TELEGRAM_TOKEN")
 
-def translate_text(text: str, dest_lang: str = 'ru') -> str:
-    """
-    Переводит текст с помощью Google Translate.
-    """
-    if not text or not text.strip():
-        return "Нечего переводить."
-    try:
-        translator = Translator()
-        # Определяем язык оригинала и переводим
-        detected = translator.detect(text)
-        translation = translator.translate(text, dest=dest_lang, src=detected.lang)
-        return translation.text
-    except Exception as e:
-        logger.error(f"Ошибка во время перевода: {e}")
-        return "Произошла ошибка при обращении к сервису перевода."
+# --- ВАЖНО для Windows ---
+# Если Tesseract установлен не в стандартный путь, раскомментируйте и укажите путь к tesseract.exe
+# Например:
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-def ocr_and_translate_image(image: Image.Image) -> str:
-    """
-    Распознает текст на изображении с помощью Tesseract и переводит его.
-    """
-    try:
-        # Распознаем текст, используя английский и русский языки
-        extracted_text = pytesseract.image_to_string(image, lang='rus+eng')
+# Инициализируем переводчик один раз, чтобы не создавать его при каждом сообщении
+translator = Translator()
 
-        if not extracted_text or not extracted_text.strip():
-            return "Не удалось распознать текст на изображении."
 
-        # Переводим распознанный текст
-        translated_text = translate_text(extracted_text)
+# --- ФУНКЦИИ-ОБРАБОТЧИКИ ---
 
-        # Возвращаем и оригинал, и перевод для удобства
-        return f"**Распознанный текст:**\n`{extracted_text.strip()}`\n\n**Перевод:**\n`{translated_text}`"
-
-    except pytesseract.TesseractNotFoundError:
-        logger.error("Tesseract не установлен или не найден в системном PATH.")
-        return ("Критическая ошибка: Программа Tesseract OCR не установлена на сервере. "
-                "Выполните команду: sudo apt install tesseract-ocr")
-    except Exception as e:
-        logger.error(f"Ошибка при обработке изображения: {e}")
-        return "Произошла непредвиденная ошибка при обработке изображения."
-
-# --- ОБРАБОТЧИКИ КОМАНД TELEGRAM ---
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start."""
-    user_name = update.message.from_user.first_name
-    await update.message.reply_text(
-        f"Привет, {user_name}!\n\n"
-        "Я бот-переводчик на базе Google Translate.\n\n"
-        "➡️ Отправь мне любой текст, и я переведу его на русский.\n\n"
-        "🖼️ Отправь картинку с текстом, и я распознаю его и тоже переведу."
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /start. Отправляет приветственное сообщение."""
+    user = update.effective_user
+    await update.message.reply_html(
+        f"Привет, {user.mention_html()}!\n\n"
+        f"Я — бот-переводчик. Отправь мне текст, и я переведу его на русский или английский.\n\n"
+        f"А если отправишь картинку с текстом, я распознаю его и тоже переведу!",
     )
 
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текстовые сообщения для перевода."""
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает и переводит текстовые сообщения."""
     user_text = update.message.text
-    await context.bot.send_chat_action(chat_id=update.message.chat_id, action='typing')
+    translated_text, src_lang, dest_lang = translate_text_logic(user_text)
 
-    translation = translate_text(user_text)
-    # Отправляем с форматированием Markdown для красоты
-    await update.message.reply_text(translation, parse_mode='Markdown')
+    if src_lang != "error":
+        await update.message.reply_text(
+            f"Перевод ({src_lang} → {dest_lang}):\n\n{translated_text}"
+        )
+    else:
+        # Если произошла ошибка при переводе
+        await update.message.reply_text(translated_text)
 
-async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает сообщения с фотографиями для распознавания и перевода текста."""
-    await context.bot.send_chat_action(chat_id=update.message.chat_id, action='typing')
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает фотографии, распознает текст и переводит его."""
+    user_id = update.effective_user.id
+    temp_photo_path = f"temp_photo_{user_id}.jpg"
+    
     try:
+        # Получаем файл фото самого высокого качества
         photo_file = await update.message.photo[-1].get_file()
-        photo_stream = BytesIO()
-        await photo_file.download_to_memory(photo_stream)
-        photo_stream.seek(0)
 
-        image = Image.open(photo_stream)
+        # Скачиваем фото во временный файл
+        await photo_file.download_to_drive(temp_photo_path)
         
-        ocr_result = ocr_and_translate_image(image)
-        await update.message.reply_text(ocr_result, parse_mode='Markdown')
+        await update.message.reply_text("Картинка получена. Начинаю распознавание...")
+
+        # Распознаем текст с помощью Tesseract для русского и английского языков
+        recognized_text = pytesseract.image_to_string(Image.open(temp_photo_path), lang='rus+eng')
+
+        if not recognized_text.strip():
+            await update.message.reply_text(
+                "Не удалось распознать текст на картинке. Попробуйте другое изображение "
+                "с более четким текстом."
+            )
+            return
+
+        # Отправляем пользователю распознанный текст для проверки
+        await update.message.reply_text(f"Распознанный текст:\n\n`{recognized_text}`", parse_mode='Markdown')
+        
+        # Переводим распознанный текст
+        translated_text, src_lang, dest_lang = translate_text_logic(recognized_text)
+        
+        if src_lang != "error":
+            await update.message.reply_text(
+                f"Перевод ({src_lang} → {dest_lang}):\n\n{translated_text}"
+            )
+        else:
+            await update.message.reply_text(translated_text)
 
     except Exception as e:
-        logger.error(f"Ошибка при получении фото: {e}")
-        await update.message.reply_text("Не удалось загрузить или обработать изображение.")
+        logger.error(f"Ошибка при обработке фото: {e}")
+        await update.message.reply_text("Произошла ошибка при обработке изображения. Пожалуйста, попробуйте позже.")
+    finally:
+        # Удаляем временный файл после обработки, даже если была ошибка
+        if os.path.exists(temp_photo_path):
+            os.remove(temp_photo_path)
 
-# --- ОСНОВНАЯ ЧАСТЬ ЗАПУСКА БОТА ---
 
-async def post_init(application: Application):
-    """Установка команд меню после запуска."""
-    await application.bot.set_my_commands([
-        BotCommand("start", "🚀 Перезапустить бота")
-    ])
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
-def main():
-    """Основная функция для запуска бота."""
-    if not TELEGRAM_TOKEN:
-        logger.error("Токен Telegram не найден! Установите переменную окружения TELEGRAM_TOKEN.")
-        return
+def translate_text_logic(text: str) -> tuple[str, str, str]:
+    """
+    Основная логика перевода.
+    Возвращает кортеж: (переведенный_текст, исходный_язык, язык_перевода).
+    """
+    if not text.strip():
+        return "Нечего переводить. Пожалуйста, отправьте текст.", "none", "none"
+        
+    try:
+        # Определяем исходный язык
+        detected = translator.detect(text)
+        src_lang = detected.lang
+        
+        # Логика переключения языка: если текст русский, переводим на английский.
+        # В любом другом случае — переводим на русский.
+        dest_lang = 'en' if src_lang == 'ru' else 'ru'
+        
+        translated = translator.translate(text, dest=dest_lang, src=src_lang)
+        return translated.text, src_lang, dest_lang
+    except Exception as e:
+        logger.error(f"Ошибка перевода: {e}")
+        return "Не удалось перевести текст. Возможно, проблема с API переводчика.", "error", "error"
 
-    application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
+# --- ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА БОТА ---
 
+def main() -> None:
+    """Запуск бота и настройка обработчиков."""
+    # Создаем объект приложения с вашим токеном
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Добавляем обработчики для разных типов сообщений
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    # Запускаем бота в режиме опроса (polling)
     logger.info("Бот запускается...")
     application.run_polling()
+    logger.info("Бот остановлен.")
+
 
 if __name__ == "__main__":
     main()
